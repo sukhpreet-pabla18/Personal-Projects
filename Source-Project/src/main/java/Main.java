@@ -2,39 +2,51 @@
  * Created by Sukhpreet on 8/14/2018.
  */
 import javafx.util.Pair;
+
 import opennlp.tools.chunker.ChunkerME;
 import opennlp.tools.chunker.ChunkerModel;
 import opennlp.tools.postag.POSModel;
 import opennlp.tools.postag.POSSample;
 import opennlp.tools.postag.POSTaggerME;
+import opennlp.tools.sentdetect.SentenceDetectorME;
+import opennlp.tools.sentdetect.SentenceModel;
 import opennlp.tools.tokenize.Tokenizer;
 import opennlp.tools.tokenize.TokenizerME;
 import opennlp.tools.tokenize.TokenizerModel;
 import opennlp.tools.tokenize.WhitespaceTokenizer;
 
-import java.io.FileInputStream;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.InputStream;
+import java.io.FileInputStream;
+import java.io.InputStreamReader;
+import java.io.IOException;
+import java.io.BufferedReader;
+
+import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.TreeMap;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Scanner;
+
 import java.net.HttpURLConnection;
 import java.net.URL;
 
 public class Main {
-    File file;
-    String apiKey = null;
-    String searchEngineID = null;
-    final String searchURL;
-    public ArrayList<String> listOfURLs;
-    TokenizerModel tokenmodel;
-    POSModel tagmodel;
-    ChunkerModel chunkmodel;
+    private File file;
+    private String apiKey = null;
+    private String searchEngineID = null;
+    private final String searchURL;
+    private TokenizerModel tokenmodel;
+    private POSModel tagmodel;
+    private ChunkerModel chunkmodel;
+    private SentenceModel sentmodel;
+
 
     public Main() {
         try {
@@ -55,7 +67,6 @@ public class Main {
             System.exit(1);
         }
         searchURL = "https://www.googleapis.com/customsearch/v1?";
-        listOfURLs = new ArrayList<String>();
         try {
             InputStream modelIn = new FileInputStream("en-token.bin");
             tokenmodel = new TokenizerModel(modelIn);
@@ -63,43 +74,29 @@ public class Main {
             tagmodel = new POSModel(modelIn2);
             InputStream modelIn3 = new FileInputStream("en-chunker.bin");
             chunkmodel = new ChunkerModel(modelIn3);
+            InputStream modelIn4 = new FileInputStream("en-sent.bin");
+            sentmodel = new SentenceModel(modelIn4);
         }
-        catch (Exception e) {
+        catch (IOException e) {
             System.out.println("Error, please run the program again");
             System.exit(1);
         }
     }
 
-    public void createPhrases(String query) {
-        Tokenizer tokenizer = new TokenizerME(tokenmodel);
-        POSTaggerME tagger = new POSTaggerME(tagmodel);
-        ChunkerME chunker = new ChunkerME(chunkmodel);
+//-----------------------------------------------------------------------------------------------------------------------
+//PART 1
 
-
-        WhitespaceTokenizer whitespaceTokenizer= WhitespaceTokenizer.INSTANCE;
-        String[] tokens = whitespaceTokenizer.tokenize(query);
-        String[] tags = tagger.tag(tokens);
-        POSSample taggedSentence = new POSSample(tokens, tags);
-        System.out.println("Tagged sentence: " + taggedSentence.toString());
-
-        String[] chunks = chunker.chunk(tokens, tags);
-        System.out.print("Chunked sentence: ");
-        for (String s: chunks)
-            System.out.print(s + "  ");
-        System.out.println();
-    }
-//-----------------------------------------------------------------------------------------------------------------------------
-//PART 2
-    //NOTE: Don't worry about the printing stuff. That's just for debugging purposes
-    public TreeMap<Integer, Double> search(String query, String exactTerms, double givenValue) {
+    /* Uses Google CustomSearchAPI to get batches of 10 search results at a time
+       Uses buildSearchString() to get the URL of the list of 10 search results
+       Adds every link in search results to the listOfURLS ArrayList, which is utilized by scrapePages()
+    */
+    public ArrayList<String> search(String query) {
         if (!query.substring(0, 8).equals("How many"))
             throw new IllegalArgumentException("Query must start with \"How many\"");
-        TreeMap<Integer, Double> map = new TreeMap<Integer, Double>();
-        for (int startIndex = 1; startIndex < 30; startIndex+=10) {
+        ArrayList<String> listOfURLs = new ArrayList<String>();
+        for (int startIndex = 1; startIndex < 20; startIndex+=10) {
             try {
-                //map that'll map the PageRank to the number in the source that's closest to givenValue
-                String pUrl = buildSearchString(query, startIndex, exactTerms);
-                int index = startIndex - 1; //index = PageRank, it's initialized to 0, 10, 20, etc
+                String pUrl = buildSearchString(query, startIndex);
                 URL url = new URL(pUrl);
                 HttpURLConnection connection = (HttpURLConnection) url.openConnection();
                 BufferedReader br = new BufferedReader(new InputStreamReader(connection.getInputStream()));
@@ -108,56 +105,23 @@ public class Main {
                 StringBuffer buffer = new StringBuffer();
                 while ((line = br.readLine()) != null) {
                     buffer.append(line);
-                    if (line.contains("\"link\"")) {  //only 10 occurrences of "link" in each batch of search results, so "link"
-                        index++;                     // section denotes start of new source
+                    if (line.contains("\"link\""))            //"link" section denotes start of new source
                         listOfURLs.add(line.substring(line.indexOf("http"), line.indexOf("\",")));
-                    }
-                    else if (line.contains(("snippet"))) {
-                        //Formatting for when a number is given as ab,cd or ab, cd rather than abcd
-                        line = line.replace(", ", ",");
-                        line = line.replace(",", "");
-                        Scanner scan = new Scanner(line);
-                        ArrayList<Double> nums = new ArrayList<Double>();
-
-                        //While the line has another double, get it and add it to nums
-                        while (scan.useDelimiter("\\D+").hasNextDouble()) {
-                            double nxt = scan.useDelimiter("\\D+").nextDouble();
-                            nums.add(nxt);
-                        }
-
-                        //Map the index (PageRank) to the closest value in nums to givenValue using the helper method
-                        if (nums.size() > 0)
-                            map.put(index, findClosestDoubleToGivenVal(nums, givenValue));
-                    }
                 }
-                //return buffer.toString();
-            } catch (Exception e) {
-                e.printStackTrace();
+            } catch (IOException e) {
+                System.out.println("Couldn't connect to Google CustomSearch webpage, try again");
+                System.exit(1);
             }
         }
-        System.out.println(map.values());
-        return map;
+        return listOfURLs;
     }
 
-    //Find the closest double in the ArrayList to the givenValue (value that the debater provided)
-    private double findClosestDoubleToGivenVal(ArrayList<Double> lst, double givenValue) {
-        double diff = Math.abs(lst.get(0) - givenValue);
-        int index = 0;
-        for (int i = 1; i < lst.size(); i++) {
-            if (Math.abs(lst.get(i) - givenValue) < diff) {
-                diff = Math.abs(lst.get(i) - givenValue);
-                index = i;
-            }
-        }
-        return lst.get(index);
-    }
 
     /* searchString: search Query
        start: index of first search result
-       numOfResults: number of results
-       exactTerms: filters out search results that don't contain this String
+       Builds the URL that we'll be connecting to in search() to get search results from Google CustomSearch
      */
-    private String buildSearchString(String searchString, int start, String exactTerms) {
+    private String buildSearchString(String searchString, int start) {
         String toSearch = searchURL + "key=" + apiKey + "&cx=" + searchEngineID + "&q=";
 
         // replace spaces in the search query with +
@@ -168,26 +132,142 @@ public class Main {
         // specify response format as json
         toSearch += "&alt=json";
 
-        //specify exact phrase that each result must contain
-
-        exactTerms = exactTerms.replace(" ", "%20");
+//        exactTerms = exactTerms.replace(" ", "%20");
 //        toSearch += "&exactTerms=" + exactTerms;
 
         // specify starting result number
         toSearch += "&start=" + start;
-
-        // specify the number of results you need from the starting position
-//        toSearch += "&num=" + numOfResults;
-
-        //System.out.println("Search URL: " + toSearch);
         return toSearch;
     }
+
+
+//-----------------------------------------------------------------------------------------------------------------------
+//PART 2
+
+    /* Query is tokenized (separated into its constituent words) and then tagged (each word's part of speech is determined)
+       Using the results of the tokenizer and tagger, query is then chunked (the different types of phrases -- i.e. noun
+       phrases, verb phrases, prepositional phrases, etc. -- in the query are determined)
+       Every noun phrase is added to the phrases ArrayList
+       After all noun phrases in the query are found, the ArrayList is returned
+     */
+    public ArrayList<String> createPhrases(String query) {
+        query = query.substring(9);                        //gets rid of the "How many" from the query
+        ArrayList<String> phrases = new ArrayList<String>();
+        Tokenizer tokenizer = new TokenizerME(tokenmodel);
+        POSTaggerME tagger = new POSTaggerME(tagmodel);
+        ChunkerME chunker = new ChunkerME(chunkmodel);
+
+//        WhitespaceTokenizer whitespaceTokenizer= WhitespaceTokenizer.INSTANCE;
+        String[] tokens = tokenizer.tokenize(query);
+        String[] tags = tagger.tag(tokens);
+        POSSample taggedSentence = new POSSample(tokens, tags);
+        System.out.println("Tagged sentence: " + taggedSentence.toString());
+
+        String[] chunks = chunker.chunk(tokens, tags);
+        System.out.print("Chunked sentence: ");
+        for (int i = 0; i < chunks.length; i++) {
+            System.out.print(chunks[i] + "  ");
+            if (chunks[i].equals("B-NP")) {                   //finds and builds the entire noun phrase
+                String nounPhrase = tokens[i];
+                for (int j = i + 1; j < chunks.length; j++) {
+                    if (chunks[j].equals("I-NP"))
+                        nounPhrase += " " + tokens[j];
+                    else {
+                        i = j-1;
+                        break;
+                    }
+                }
+                phrases.add(nounPhrase);
+            }
+        }
+        System.out.println();
+        return phrases;
+    }
+
+
+    /* For each URL obtained from the search() method:
+        1. JSoup gets the webpage and scrapes it for all its text
+        2. The SentenceDetectorME instance separates out each sentence from the text
+        3. If a sentence contains all the phrases in the phrases list, it is searched for a double
+        4. If the sentence contains a double, we put (index of URL in search results, double value) in the TreeMap and
+           move on to the next URL
+        5. If the sentence doesn't contain a double, we keep going through the sentences until we find another one
+           containing all the phrases in the phrases list
+     */
+    public TreeMap<Integer, Double> scrapePages(String query, ArrayList<String> listOfURLs) {
+        TreeMap<Integer, Double> map = new TreeMap<Integer, Double>();
+        SentenceDetectorME sentenceDetector = new SentenceDetectorME(sentmodel);
+        Document doc = null;
+        ArrayList<String> phrases = createPhrases(query);
+
+        for (int i = 0; i < listOfURLs.size(); i++) {
+            try {
+                doc = Jsoup.connect(listOfURLs.get(i)).get();
+            } catch (IOException e) {
+                continue;
+            }
+            doc = doc.normalise();
+            Element body = doc.body();
+            String sentences[] = sentenceDetector.sentDetect(body.wholeText());
+            boolean goodSentence;
+            for (String s: sentences) {
+                goodSentence = true;
+                for (String p: phrases) {
+                    if (!s.contains(p)) {
+                        goodSentence = false;
+                        break;
+                    }
+                }
+                if (goodSentence) {
+                    boolean gotValue = false;
+                    double val = findDouble(s);            //finds the first double in the sentence
+                    if (val != Double.POSITIVE_INFINITY) {
+                        map.put(listOfURLs.size() - i, val);  //the key is # of search results - index of search result
+                        break;
+                    }
+                }
+            }
+        }
+        return map;
+    }
+
+
+    /* Helper method that finds and returns the first double in a String
+       Returns Double.POSITIVE_INFINITY if no double found
+     */
+    public double findDouble(String s) {
+        s = s.replaceAll(",", "");
+        String dblAsString = "";
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            boolean decimal = false;
+            if (c >= 48 && c <= 57) {
+                dblAsString += c;
+                for (int j = i+1; j < s.length(); j++) {
+                    char c2 = s.charAt(j);
+                    if (c2 == 46) {
+                        if (decimal)
+                            break;
+                        decimal = true;
+                        dblAsString += c2;
+                    }
+                    else if (c2 >= 48 && c2 <= 57)
+                        dblAsString += c2;
+                    else
+                        break;
+                }
+                return Double.parseDouble(dblAsString);
+            }
+        }
+        return Double.POSITIVE_INFINITY;
+    }
+
 
 //-------------------------------------------------------------------------------------------------------------------------------
 //PART 3
 
-    //Inputs are a TreeMap mapping the source's score to the value in the source (found in Part 1/2), and an error (in decimal form)
-    //Output is a HashMap mapping the bucketIndex (w.r.t. to the histogram) to a Pair mapping the list of values in the
+    //Inputs: TreeMap mapping the source's score to the value in the source (found in Part 2), and an error (in decimal form)
+    //Output: HashMap mapping the bucketIndex (w.r.t. to the histogram) to a Pair mapping the list of values in the
     //bucket to the total score of all the sources which are represented in the bucket
     private HashMap<Integer, Pair<ArrayList<Double>, Integer>> makeHistogram(TreeMap<Integer, Double> inputMap,
                 double error) {
@@ -200,12 +280,10 @@ public class Main {
         ArrayList<Double> sortedValues = new ArrayList<Double>(inputMap.values());
         sortedValues.sort(null);
 
-        //Starting index is the 1st quartile
+        //MIN is the smallest value and MAX is the biggest value in the histogram
         final double MAX = sortedValues.get(sortedValues.size()-1);
         final double MIN = sortedValues.get(0);
 
-//        System.out.println("MIN: " + MIN);
-//        System.out.println("MAX: " + MAX);
         final double SIZE = (MAX - MIN) * error; //Size of each histogram bucket
 
         ArrayList<Map.Entry<Integer, Double>> entryList = new ArrayList<Map.Entry<Integer, Double>>(inputMap.entrySet());
@@ -233,18 +311,10 @@ public class Main {
         return histogram;
     }
 
-    //Input: a list of all the values in the histogram bucket, and the desired quartile
-    //Output: the value in the list at the specified quartile
-    private double findMedian(ArrayList<Double> values) {
-        if (values == null || values.size() == 0)
-            throw new IllegalArgumentException("List is either null or empty");
-        if (values.size() % 2 == 1)
-            return values.get(values.size() / 2);
-        return (values.get(values.size() / 2) + values.get(values.size() / 2 + 1)) / 2;
-    }
 
 //-----------------------------------------------------------------------------------------------------------------------------
 //PART 4
+
     //Input : a HashMap mapping the bucketIndex to a Pair that maps the values in the bucket
     //to the total score of all the sources represented in the bucket (output of makeHistogram())
     //Output : the median of the values in the bucket with the lowest total score
@@ -254,30 +324,41 @@ public class Main {
 
         //inputMap.values() gets a Collection of all the values that are mapped to in the map
         ArrayList<Pair<ArrayList<Double>, Integer>> mapValues = new ArrayList<Pair<ArrayList<Double>, Integer>>(inputMap.values());
-        int minIndex = -1;
-        double minScore = Integer.MAX_VALUE;
+        int maxIndex = -1;
+        double maxScore = Integer.MIN_VALUE;
 
         //Finds the lowest total score and the index at which it was found
         for (int i = 0; i < mapValues.size(); i++) {
             Pair<ArrayList<Double>, Integer> pair = mapValues.get(i);
-            if (pair.getValue() < minScore) {
-                minScore = pair.getValue();
-                minIndex = i;
+            if (pair.getValue() > maxScore) {
+                maxScore = pair.getValue();
+                maxIndex = i;
             }
         }
 
         //Get the list at index minIndex (represents the bucket of values with the lowest total score) and returns the median
-        ArrayList<Double> chosenBucket = mapValues.get(minIndex).getKey();
+        ArrayList<Double> chosenBucket = mapValues.get(maxIndex).getKey();
         chosenBucket.sort(null); //Need to sort the list of values before finding the median
         return findMedian(chosenBucket); //Get the median of the bucket
     }
 
+    //Input: a list of all the values in the histogram bucket
+    //Output: the median of the list
+    private double findMedian(ArrayList<Double> values) {
+        if (values == null || values.size() == 0)
+            throw new IllegalArgumentException("List is either null or empty");
+        if (values.size() % 2 == 1)
+            return values.get(values.size() / 2);
+        return (values.get(values.size() / 2) + values.get(values.size() / 2 + 1)) / 2;
+    }
+
 //-----------------------------------------------------------------------------------------------------------------------------
     //PART 5
-    private double solution(String query, String exactTerms, double error, double givenValue) {
+    private double solution(String query, double error) {
         HashMap<Integer, Pair<ArrayList<Double>, Integer>> indexToPairMap = null;
-        TreeMap<Integer, Double> rankToValuesMap = search(query, exactTerms, givenValue);
-        indexToPairMap = makeHistogram(rankToValuesMap, 0.05);
+        ArrayList<String> listOfURLs = search(query);
+        TreeMap<Integer, Double> rankToValuesMap = scrapePages(query, listOfURLs);
+        indexToPairMap = makeHistogram(rankToValuesMap, error);
         double answer = getValue(indexToPairMap);
         return answer;
     }
@@ -285,11 +366,17 @@ public class Main {
 //-----------------------------------------------------------------------------------------------------------------------------
     //MAIN METHOD
     public static void main (String[] args) {
-        //Getting and printing the answer (30 search results)
+        System.out.println("What is your query?");
+        Scanner scan = new Scanner(System.in);
+        String query = scan.nextLine();
         Main main = new Main();
-        System.out.println("How many people died in the Civil War");
-        main.createPhrases("How many people died in the Civil War");
-        double answer = main.solution("How many school shootings occurred in the US in 2016", "", 0.05, 400);
-        System.out.println("Answer: " + answer);
+        double sol = main.solution(query, 0.02);
+        System.out.println("Answer: " + sol);
+
+//        main.scrapePages();
+//        System.out.println("How many people died in the Civil War");
+//        main.createPhrases(scan.nextLine());
+//        main.createPhrases("How many people died in the Civil War");
+
     }
 }
